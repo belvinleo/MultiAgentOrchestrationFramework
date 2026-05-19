@@ -1,65 +1,197 @@
 """
 orchestrator.py
 ---------------
-The entry point of LifeOS. Every message you send goes here first.
-The orchestrator decides which agent handles it and returns the response.
-Right now it handles direct conversation. Department routing comes in Phase 2.
+Phase 3 Orchestrator — Tool-Aware.
+Fetches real data from tools before departments answer.
+Departments now see live market data, news, and health logs.
 """
 
 from core.base_agent import BaseAgent
+from core.registry import DepartmentRegistry
 from core.memory import short_term, long_term
+from core.feedback import FeedbackEngine
+from tools.tool_registry import ToolRegistry
 from datetime import datetime
+import yaml
 
 
 class Orchestrator(BaseAgent):
-    """
-    The Chief of Staff of LifeOS.
-    Receives your message, thinks about it, routes it, returns a response.
-    """
 
     def __init__(self):
         super().__init__(
             name="Orchestrator",
-            role="Chief of Staff of LifeOS. You are the first agent to receive every message from Belvin.",
+            role="Chief of Staff of LifeOS. Route requests to departments and synthesize responses.",
             domain="Routing, coordination, synthesis, general intelligence",
             extra_prompt="""
-You are the master coordinator. For now, handle all requests directly and
-intelligently. As more departments come online, you will route to them.
-
-At the start of every response, briefly acknowledge what type of request
-this is (health, finance, knowledge, social, productivity, or general).
-Then respond helpfully and concisely.
-
-If you don't know something, say so honestly. Never fabricate.
+You are the master coordinator of LifeOS. Synthesize department responses
+into one clean, helpful, unified reply for Belvin.
+Be concise. Lead with the most important insight.
+Never mention internal routing or department names unless asked.
 """
         )
+        self.registry = DepartmentRegistry()
+        self.feedback = FeedbackEngine()
+        count = self.registry.register_all("departments")
+        from rich.console import Console
+        Console().print(f"[dim]Registry loaded {count} departments.[/dim]")
 
-    def process(self, user_message: str) -> str:
+    def _get_tool_context(self, message: str, tools: list) -> str:
         """
-        Main method. Takes user input, returns LifeOS response.
-        Also updates short-term memory with session context.
+        Fetch real data from tools relevant to the message.
+        Returns formatted string injected into agent context.
         """
-        # Update session context
+        context_parts = []
+
+        for tool_name in tools:
+            try:
+                tool = ToolRegistry.get(tool_name)
+
+                if tool_name == "finance_api":
+                    # Detect what financial data is needed
+                    msg_lower = message.lower()
+                    finance_data = []
+
+                    # Always include index snapshot
+                    nifty = tool.get_index("nifty")
+                    sensex = tool.get_index("sensex")
+                    finance_data.append("=== MARKET SNAPSHOT ===")
+                    finance_data.append(tool.format_for_agent(nifty))
+                    finance_data.append(tool.format_for_agent(sensex))
+
+                    # If asking about specific stocks
+                    stock_keywords = {
+                        "reliance": "RELIANCE.NS",
+                        "tcs": "TCS.NS",
+                        "infosys": "INFY.NS",
+                        "hdfc": "HDFCBANK.NS",
+                        "sbi": "SBIN.NS",
+                        "icici": "ICICIBANK.NS",
+                        "wipro": "WIPRO.NS",
+                        "apple": "AAPL",
+                        "tesla": "TSLA",
+                        "google": "GOOGL",
+                    }
+                    for keyword, ticker in stock_keywords.items():
+                        if keyword in msg_lower:
+                            stock = tool.get_stock_price(ticker)
+                            finance_data.append(tool.format_for_agent(stock))
+
+                    # If asking about gainers/losers/market
+                    if any(w in msg_lower for w in ["gainer", "loser", "mover", "top", "market"]):
+                        gl = tool.get_top_gainers_losers()
+                        finance_data.append("\n=== TOP GAINERS ===")
+                        for g in gl["gainers"]:
+                            finance_data.append(tool.format_for_agent(g))
+                        finance_data.append("\n=== TOP LOSERS ===")
+                        for l in gl["losers"]:
+                            finance_data.append(tool.format_for_agent(l))
+
+                    context_parts.append("\n".join(finance_data))
+
+                elif tool_name == "health_input":
+                    health_data = tool.format_for_agent(days=7)
+                    context_parts.append(health_data)
+
+                elif tool_name == "web_search":
+                    # Search for current news relevant to the message
+                    news = tool.search_news(message, max_results=3)
+                    formatted = tool.format_for_agent(news, max_chars=1500)
+                    context_parts.append(f"=== CURRENT NEWS ===\n{formatted}")
+
+            except Exception as e:
+                context_parts.append(f"[Tool {tool_name} error: {str(e)}]")
+
+        return "\n\n".join(context_parts)
+
+    def _get_department_tools(self, config_path: str) -> list:
+        """Read tools list from department config."""
+        try:
+            with open(config_path, "r") as f:
+                config = yaml.safe_load(f)
+            return config.get("tools", [])
+        except Exception:
+            return []
+
+    def process(self, user_message: str) -> tuple:
+        """
+        Route message, fetch real data, collect dept responses,
+        synthesize into final reply.
+        """
         short_term.update_context({
             "last_message": user_message,
             "last_active": str(datetime.now()),
         })
 
-        # Retrieve any relevant long-term memory
-        relevant_memory = long_term.search("general", user_message, top_k=2)
-        context = short_term.get_all()
+        matches = self.registry.route(user_message, top_k=3, threshold=0.3)
+        department_responses = []
 
-        if relevant_memory:
-            context["relevant_memory"] = " | ".join(relevant_memory)
+        if matches:
+            for match in matches:
+                try:
+                    agent = self.registry.get_agent(match["name"])
+                    trust = self.feedback.get_trust_score(match["name"])
+                    namespace = agent.config.get("memory_namespace", "general")
 
-        # Think and respond
-        response = self.think(user_message, context=context)
+                    # Get tools declared by this department
+                    tools = self._get_department_tools(match["config_path"])
 
-        # Store this interaction in long-term memory
-        long_term.store(
-            namespace="general",
-            content=f"User: {user_message} | LifeOS: {response}",
-            metadata={"type": "conversation", "date": str(datetime.now())}
-        )
+                    # Fetch real data from tools
+                    tool_context = ""
+                    if tools:
+                        tool_context = self._get_tool_context(user_message, tools)
 
-        return response
+                    # Retrieve relevant past memory
+                    relevant_memory = long_term.search(namespace, user_message, top_k=2)
+
+                    # Build full context
+                    context = {
+                        "current_time": str(datetime.now()),
+                        "trust_score": trust,
+                    }
+                    if tool_context:
+                        context["live_data"] = tool_context
+                    if relevant_memory:
+                        context["memory"] = " | ".join(relevant_memory)
+
+                    response = agent.think(user_message, context=context)
+                    department_responses.append({
+                        "department": match["name"],
+                        "score": match["score"],
+                        "response": response
+                    })
+
+                    long_term.store(
+                        namespace=namespace,
+                        content=f"User: {user_message} | Response: {response}",
+                        metadata={"type": "interaction", "date": str(datetime.now())}
+                    )
+
+                except Exception as e:
+                    department_responses.append({
+                        "department": match["name"],
+                        "score": match["score"],
+                        "response": f"[Error: {str(e)}]"
+                    })
+
+        # Synthesize or return directly
+        if len(department_responses) > 1:
+            synthesis_input = "\n\n".join([
+                f"[{r['department']}]: {r['response']}"
+                for r in department_responses
+            ])
+            final_response = self.think(
+                f"Synthesize these into one unified reply:\n\n{synthesis_input}",
+                context={"original_request": user_message}
+            )
+        elif len(department_responses) == 1:
+            final_response = department_responses[0]["response"]
+        else:
+            final_response = self.think(user_message)
+
+        return final_response, matches
+
+    def record_feedback(self, department_name: str, score: int, reason: str = ""):
+        self.feedback.record(department_name, score, reason)
+
+    def get_trust_scores(self) -> str:
+        return self.feedback.summary()
