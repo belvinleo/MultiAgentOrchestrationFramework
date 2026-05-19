@@ -1,10 +1,12 @@
 """
 main.py
 -------
-LifeOS CLI — Phase 5
-Now includes Judiciary enforcement and Legislature law proposals.
+LifeOS CLI — Phase 6
+Now includes proactive mode, emotion engine,
+5 new departments, and background monitoring.
 """
 
+import threading
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -13,6 +15,9 @@ from core.orchestrator import Orchestrator
 from core.high_council import HighCouncil
 from core.legislature import Legislature
 from core.constitution_engine import ConstitutionEngine
+from core.proactive_engine import ProactiveEngine
+from core.emotion_engine import EmotionEngine
+from core.scheduler import Scheduler
 from tools.health_input import HealthInput
 
 console = Console()
@@ -21,14 +26,14 @@ health = HealthInput()
 
 def print_banner():
     console.print(Panel(
-        Text("LifeOS v0.5 — Personal AI Operating System", justify="center"),
+        Text("LifeOS v0.6 — Personal AI Operating System", justify="center"),
         style="bold blue"
     ))
     console.print(
-        "[dim]Commands: exit | + reward | - penalty | scores | log health | "
-        "council | report | audit | intel <topic> | "
+        "[dim]Commands: exit | + reward | - penalty | scores | "
+        "log health | council | report | audit | intel <topic> | "
         "laws | propose | approve <id> | reject <id> | "
-        "changelog | judiciary[/dim]\n"
+        "changelog | judiciary | emotion | alerts | schedule[/dim]\n"
     )
 
 
@@ -42,6 +47,24 @@ def show_routing(matches: list):
         bar = "█" * int(m["score"] * 10)
         table.add_row(m["name"], f"{m['score']:.2f} {bar}")
     console.print(table)
+
+
+def show_pending_alerts(proactive: ProactiveEngine):
+    """Check and display any pending proactive alerts."""
+    alerts = proactive.get_pending_alerts()
+    for alert in alerts:
+        priority_styles = {
+            "critical": "bold red",
+            "high":     "bold yellow",
+            "medium":   "yellow",
+            "low":      "cyan",
+        }
+        style = priority_styles.get(alert["priority"], "white")
+        console.print(Panel(
+            proactive.format_alert(alert),
+            title=f"[{style}]LifeOS Alert[/{style}]",
+            border_style=style.replace("bold ", ""),
+        ))
 
 
 def log_health():
@@ -75,12 +98,31 @@ def main():
     print_banner()
     console.print("[dim]Starting LifeOS...[/dim]")
 
+    # Initialize all systems
     orchestrator = Orchestrator()
-    council = HighCouncil()
-    legislature = Legislature()
+    council      = HighCouncil()
+    legislature  = Legislature()
     constitution = ConstitutionEngine()
+    proactive    = ProactiveEngine()
+    emotion      = EmotionEngine()
 
-    console.print("[green]✓ LifeOS v0.5 online. Constitution engine active.[/green]\n")
+    # Start background scheduler
+    scheduler = Scheduler(tick_interval=60)
+    scheduler.add_task(
+        name="Proactive Monitor",
+        func=proactive.run_all_monitors,
+        interval_seconds=300,       # every 5 minutes
+        run_immediately=True        # run once at startup
+    )
+    scheduler.add_task(
+        name="Legislature Pattern Scan",
+        func=lambda: legislature.analyze_and_propose(),
+        interval_seconds=1800,      # every 30 minutes
+        run_immediately=False
+    )
+    scheduler.start()
+
+    console.print("[green]✓ LifeOS v0.6 online. Proactive mode active.[/green]\n")
 
     # Startup audit
     findings = council.audit.run_scan()
@@ -91,11 +133,11 @@ def main():
             border_style="yellow"
         ))
 
-    # Show pending proposals on startup
+    # Show pending proposals
     pending = legislature.get_pending_proposals()
     if pending:
         console.print(Panel(
-            f"{len(pending)} law proposal(s) awaiting your decision. Type 'propose' to review.",
+            f"{len(pending)} law proposal(s) awaiting decision. Type 'propose' to review.",
             title="[cyan]Legislature[/cyan]",
             border_style="cyan"
         ))
@@ -104,6 +146,9 @@ def main():
 
     while True:
         try:
+            # Check for proactive alerts before each prompt
+            show_pending_alerts(proactive)
+
             user_input = console.input("[bold cyan]You → [/bold cyan]").strip()
 
             if not user_input:
@@ -112,6 +157,7 @@ def main():
             # ── System commands ──────────────────────────────────
 
             if user_input.lower() in ["exit", "quit", "bye"]:
+                scheduler.stop()
                 console.print("\n[yellow]LifeOS shutting down. Goodbye.[/yellow]")
                 break
 
@@ -180,8 +226,8 @@ def main():
             # ── Legislature commands ──────────────────────────────
 
             if user_input.lower() == "propose":
-                console.print("\n[dim]Legislature analyzing patterns...[/dim]")
-                proposals = legislature.analyze_and_propose()
+                console.print("\n[dim]Legislature analyzing...[/dim]")
+                legislature.analyze_and_propose()
                 pending = legislature.get_pending_proposals()
                 console.print(Panel(
                     legislature.format_proposals(pending),
@@ -193,22 +239,20 @@ def main():
             if user_input.lower().startswith("approve "):
                 prop_id = user_input[8:].strip()
                 success = legislature.approve_proposal(prop_id)
-                if success:
-                    console.print(f"[green]✓ Proposal {prop_id} approved and enacted.[/green]")
-                else:
-                    console.print(f"[red]Proposal {prop_id} not found.[/red]")
+                msg = f"[green]✓ Proposal {prop_id} approved and enacted.[/green]" \
+                      if success else f"[red]Proposal {prop_id} not found.[/red]"
+                console.print(msg)
                 continue
 
             if user_input.lower().startswith("reject "):
                 prop_id = user_input[7:].strip()
                 success = legislature.reject_proposal(prop_id, "User rejected")
-                if success:
-                    console.print(f"[yellow]✗ Proposal {prop_id} rejected.[/yellow]")
-                else:
-                    console.print(f"[red]Proposal {prop_id} not found.[/red]")
+                msg = f"[yellow]✗ Proposal {prop_id} rejected.[/yellow]" \
+                      if success else f"[red]Proposal {prop_id} not found.[/red]"
+                console.print(msg)
                 continue
 
-            # ── Judiciary command ─────────────────────────────────
+            # ── Judiciary ─────────────────────────────────────────
 
             if user_input.lower() == "judiciary":
                 console.print(Panel(
@@ -218,21 +262,67 @@ def main():
                 ))
                 continue
 
-            # ── Feedback commands ─────────────────────────────────
+            # ── Emotion engine ────────────────────────────────────
+
+            if user_input.lower() == "emotion":
+                state = emotion.infer(recent_message="")
+                lines = [
+                    f"Current state  : {state['state'].upper()}",
+                    f"Confidence     : {state['confidence']:.0%}",
+                    f"Signals        : {state['signals']}",
+                    f"Tone guidance  : {state['tone_guidance']}",
+                ]
+                console.print(Panel(
+                    "\n".join(lines),
+                    title="[cyan]Emotion Engine[/cyan]",
+                    border_style="cyan"
+                ))
+                continue
+
+            # ── Alerts history ────────────────────────────────────
+
+            if user_input.lower() == "alerts":
+                history = proactive.get_alert_history(days=7)
+                if not history:
+                    console.print("[dim]No alerts in the last 7 days.[/dim]")
+                else:
+                    lines = [f"  {a['timestamp'][:19]} | {a['priority']:<8} | {a['message'][:60]}..."
+                             for a in reversed(history[-10:])]
+                    console.print(Panel(
+                        "\n".join(lines),
+                        title="[cyan]Recent Alerts (last 7 days)[/cyan]",
+                        border_style="cyan"
+                    ))
+                continue
+
+            # ── Schedule status ───────────────────────────────────
+
+            if user_input.lower() == "schedule":
+                console.print(Panel(
+                    scheduler.format_tasks(),
+                    title="[cyan]Background Scheduler[/cyan]",
+                    border_style="cyan"
+                ))
+                continue
+
+            # ── Feedback ──────────────────────────────────────────
 
             if user_input == "+" and last_matches:
                 dept = last_matches[0]["name"]
                 orchestrator.record_feedback(dept, +1, "User reward")
-                console.print(f"[green]✓ Reward recorded for {dept}[/green]")
+                console.print(f"[green]✓ Reward for {dept}[/green]")
                 continue
 
             if user_input == "-" and last_matches:
                 dept = last_matches[0]["name"]
                 orchestrator.record_feedback(dept, -1, "User penalty")
-                console.print(f"[red]✗ Penalty recorded for {dept}[/red]")
+                console.print(f"[red]✗ Penalty for {dept}[/red]")
                 continue
 
             # ── Normal message ────────────────────────────────────
+
+            # Infer emotion and inject into context
+            emotional_context = emotion.format_for_context(user_input)
 
             console.print("\n[dim]Routing...[/dim]")
             response, matches = orchestrator.process(user_input)
@@ -249,6 +339,7 @@ def main():
             console.print()
 
         except KeyboardInterrupt:
+            scheduler.stop()
             console.print("\n[yellow]LifeOS shutting down. Goodbye.[/yellow]")
             break
 
