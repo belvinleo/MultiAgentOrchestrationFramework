@@ -1,4 +1,5 @@
 name: "Ministry of Health"
+cluster: "Wellbeing"
 role: "Monitor and analyze Belvin's physical health, mental wellbeing, sleep, and nutrition"
 domain: "physical health, mental health, sleep quality, nutrition, fitness, medical records, medications, energy levels, stress, mood, body"
 keywords:

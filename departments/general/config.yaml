@@ -1,4 +1,5 @@
 name: "General Department"
+cluster: "General"
 role: "Handle general queries that don't belong to a specific department"
 domain: "general knowledge, casual conversation, unclear requests, greetings, meta questions about LifeOS"
 keywords:

@@ -1,4 +1,5 @@
 name: "Ministry of Finance"
+cluster: "Finance"
 role: "Monitor portfolio, Indian and global markets, budget, and financial intelligence"
 domain: "stocks, portfolio, NSE, BSE, mutual funds, SIP, budget, expenses, savings, investment, Indian markets, global markets, crypto, RBI, economy"
 keywords:
