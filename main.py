@@ -1,11 +1,12 @@
 """
 main.py
 -------
-LifeOS CLI — Phase 6
-Now includes proactive mode, emotion engine,
-5 new departments, and background monitoring.
+LifeOS CLI — Phase 7
+Now includes Library department (LangGraph RAG),
+folder watcher, and proactive book insights.
 """
 
+import os
 import threading
 from rich.console import Console
 from rich.panel import Panel
@@ -19,6 +20,7 @@ from core.proactive_engine import ProactiveEngine
 from core.emotion_engine import EmotionEngine
 from core.scheduler import Scheduler
 from tools.health_input import HealthInput
+from departments.library.library_manager import LibraryManager
 
 console = Console()
 health = HealthInput()
@@ -26,14 +28,15 @@ health = HealthInput()
 
 def print_banner():
     console.print(Panel(
-        Text("LifeOS v0.6 — Personal AI Operating System", justify="center"),
+        Text("LifeOS v0.7 — Personal AI Operating System", justify="center"),
         style="bold blue"
     ))
     console.print(
         "[dim]Commands: exit | + reward | - penalty | scores | "
         "log health | council | report | audit | intel <topic> | "
         "laws | propose | approve <id> | reject <id> | "
-        "changelog | judiciary | emotion | alerts | schedule[/dim]\n"
+        "changelog | judiciary | emotion | alerts | schedule | "
+        "ingest <path> | library books | summarize <title>[/dim]\n"
     )
 
 
@@ -105,24 +108,36 @@ def main():
     constitution = ConstitutionEngine()
     proactive    = ProactiveEngine()
     emotion      = EmotionEngine()
+    library      = LibraryManager()
+
+    # Start Books folder watcher in background
+    folder_observer = library.start_folder_watcher()
+    if folder_observer:
+        console.print(f"[dim]📂 Watching ~/Books/ for new books...[/dim]")
 
     # Start background scheduler
     scheduler = Scheduler(tick_interval=60)
     scheduler.add_task(
         name="Proactive Monitor",
         func=proactive.run_all_monitors,
-        interval_seconds=300,       # every 5 minutes
-        run_immediately=True        # run once at startup
+        interval_seconds=300,        # every 5 minutes
+        run_immediately=True         # run once at startup
     )
     scheduler.add_task(
         name="Legislature Pattern Scan",
         func=lambda: legislature.analyze_and_propose(),
-        interval_seconds=1800,      # every 30 minutes
+        interval_seconds=1800,       # every 30 minutes
+        run_immediately=False
+    )
+    scheduler.add_task(
+        name="Library Insight",
+        func=lambda: _queue_library_insight(library, proactive),
+        interval_seconds=14400,      # every 4 hours
         run_immediately=False
     )
     scheduler.start()
 
-    console.print("[green]✓ LifeOS v0.6 online. Proactive mode active.[/green]\n")
+    console.print("[green]✓ LifeOS v0.7 online. Proactive mode + Library active.[/green]\n")
 
     # Startup audit
     findings = council.audit.run_scan()
@@ -158,6 +173,9 @@ def main():
 
             if user_input.lower() in ["exit", "quit", "bye"]:
                 scheduler.stop()
+                if folder_observer:
+                    folder_observer.stop()
+                    folder_observer.join()
                 console.print("\n[yellow]LifeOS shutting down. Goodbye.[/yellow]")
                 break
 
@@ -319,6 +337,38 @@ def main():
                 console.print(f"[red]✗ Penalty for {dept}[/red]")
                 continue
 
+            # ── Library commands ──────────────────────────────────
+
+            if user_input.lower().startswith("ingest "):
+                file_path = os.path.expanduser(user_input[7:].strip())
+                console.print(f"\n[dim]Ingesting: {file_path}...[/dim]")
+                result = library._handle_ingestion(file_path)
+                console.print(Panel(
+                    result,
+                    title="[bold cyan]Library — Ingestion[/bold cyan]",
+                    border_style="cyan"
+                ))
+                continue
+
+            if user_input.lower() in ["library books", "my library", "list books"]:
+                console.print(Panel(
+                    library._handle_list_books(),
+                    title="[bold cyan]Library — Your Books[/bold cyan]",
+                    border_style="cyan"
+                ))
+                continue
+
+            if user_input.lower().startswith("summarize "):
+                title = user_input[10:].strip()
+                console.print(f"\n[dim]Generating summary for: {title}...[/dim]")
+                summary = library._handle_summary(title)
+                console.print(Panel(
+                    summary,
+                    title=f"[bold cyan]Library — {title}[/bold cyan]",
+                    border_style="cyan"
+                ))
+                continue
+
             # ── Normal message ────────────────────────────────────
 
             # Infer emotion and inject into context
@@ -340,8 +390,28 @@ def main():
 
         except KeyboardInterrupt:
             scheduler.stop()
+            if folder_observer:
+                folder_observer.stop()
+                folder_observer.join()
             console.print("\n[yellow]LifeOS shutting down. Goodbye.[/yellow]")
             break
+
+
+def _queue_library_insight(library: LibraryManager, proactive: ProactiveEngine):
+    """
+    Called by the Scheduler every 4 hours.
+    Gets a library insight and queues it as a proactive alert.
+    """
+    try:
+        insight = library.get_proactive_insight()
+        if insight:
+            proactive.queue_alert(
+                message=insight,
+                priority="low",
+                source="library",
+            )
+    except Exception as e:
+        pass  # Scheduler swallows errors already, this is a safety net
 
 
 if __name__ == "__main__":
